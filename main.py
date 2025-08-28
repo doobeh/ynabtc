@@ -998,7 +998,35 @@ def sync_emails():
         total_emails = len(result.get('emails', []))
         new_emails = result.get('new_count', 0)
         
+        # Auto-send new processed emails to YNAB
+        ynab_success_count = 0
+        ynab_error_count = 0
+        
+        if new_emails > 0:
+            print(f"Processing {new_emails} new emails...")
+            
+            # Get the newest emails (those added in this sync)
+            recent_emails = Email.query.filter(
+                Email.created_at >= datetime.now(timezone.utc) - timedelta(minutes=1)
+            ).all()
+            
+            for email_record in recent_emails:
+                if email_record.status == 'processed' and not email_record.ynab and email_record.amount:
+                    print(f"Auto-sending email {email_record.id} to YNAB: {email_record.merchant_name} - {email_record.amount}")
+                    
+                    ynab_result = send_to_ynab(email_record)
+                    if ynab_result["success"]:
+                        ynab_success_count += 1
+                        print(f"✓ Successfully sent to YNAB: {email_record.merchant_name}")
+                    else:
+                        ynab_error_count += 1
+                        print(f"✗ Failed to send to YNAB: {email_record.merchant_name} - {ynab_result['error']}")
+        
+        # Build success message with YNAB info
         success_msg = f"Found {total_emails} total emails, {new_emails} new"
+        if ynab_success_count > 0 or ynab_error_count > 0:
+            success_msg += f" | YNAB: {ynab_success_count} sent, {ynab_error_count} failed"
+        
         print(f"SUCCESS: {success_msg}")
         
         # Log the successful sync
@@ -1006,6 +1034,10 @@ def sync_emails():
         
         if new_emails > 0:
             print(f"New emails processed: {new_emails}")
+            if ynab_success_count > 0:
+                print(f"Automatically sent {ynab_success_count} transactions to YNAB")
+            if ynab_error_count > 0:
+                print(f"Failed to send {ynab_error_count} transactions to YNAB")
         else:
             print("No new emails found")
 
