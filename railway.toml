@@ -6,11 +6,7 @@ healthcheckPath = "/health"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
 
-# Main web service
-[[services]]
-name = "web"
-
-# Email sync cron job - runs every 5 minutes
+# Email sync cron job - runs every 5 minutes  
 [[services]]
 name = "email-sync"
 cronSchedule = "*/5 * * * *"
