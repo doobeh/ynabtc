@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, render_template, request, redirect, url_for, flash, session, render_template_string
+from flask import Flask, jsonify, render_template, request, redirect, url_for, flash, session, render_template_string, send_file
 import click
 import os
 from googleapiclient.discovery import build
@@ -27,8 +27,12 @@ app = Flask(__name__)
 # Generate a secret key if not provided
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', secrets.token_hex(16))
 
-# Database configuration
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///emails.db'
+# Database configuration - use Railway persistent volume if available
+database_path = os.getenv('RAILWAY_VOLUME_MOUNT_PATH', app.instance_path)
+if not os.path.exists(database_path):
+    os.makedirs(database_path, exist_ok=True)
+
+app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{database_path}/emails.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 # OAuth configuration
@@ -104,23 +108,43 @@ class Email(db.Model):
         return f'<Email {self.id}: {self.subject}>'
 
 def get_gmail_service():
-    """Initialize and return Gmail API service"""
+    """Initialize and return Gmail API service with improved error handling"""
     creds = None
-    # Load credentials from token file if it exists
-    if os.path.exists(os.path.join(app.instance_path, 'token.json')):
-        creds = Credentials.from_authorized_user_file(os.path.join(app.instance_path, 'token.json'))
+    credentials_path = os.getenv('RAILWAY_VOLUME_MOUNT_PATH', 'instance')
+    token_file = os.path.join(credentials_path, 'token.json')
     
-    # If there are no (valid) credentials available, return None
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            try:
-                creds.refresh(Request())
-            except RefreshError:
-                return None
+    try:
+        # Load credentials from token file if it exists
+        if os.path.exists(token_file):
+            creds = Credentials.from_authorized_user_file(token_file)
         else:
+            print(f"[{datetime.now().isoformat()}] Gmail token file not found: {token_file}")
             return None
-    
-    return build('gmail', 'v1', credentials=creds)
+        
+        # If there are no (valid) credentials available, try to refresh
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                try:
+                    print(f"[{datetime.now().isoformat()}] Refreshing expired Gmail token...")
+                    creds.refresh(Request())
+                    
+                    # Save refreshed credentials
+                    with open(token_file, 'w') as token:
+                        token.write(creds.to_json())
+                    print(f"[{datetime.now().isoformat()}] Gmail token refreshed successfully")
+                    
+                except RefreshError as e:
+                    print(f"[{datetime.now().isoformat()}] Gmail token refresh failed: {str(e)}")
+                    return None
+            else:
+                print(f"[{datetime.now().isoformat()}] Gmail credentials invalid and no refresh token available")
+                return None
+        
+        return build('gmail', 'v1', credentials=creds)
+        
+    except Exception as e:
+        print(f"[{datetime.now().isoformat()}] Error initializing Gmail service: {str(e)}")
+        return None
 
 def extract_transaction_info(body):
     """Extract transaction information from email body if structured spans exist"""
@@ -439,6 +463,208 @@ def emails():
     return render_template('emails.html', emails=result["emails"])
 
 
+# Health check endpoints
+@app.route('/health')
+def health_check():
+    """Health check endpoint for Railway"""
+    try:
+        # Test database connection
+        db.session.execute(db.text('SELECT 1'))
+        
+        # Test Gmail authentication
+        gmail_service = get_gmail_service()
+        gmail_status = "ok" if gmail_service else "error"
+        
+        return jsonify({
+            "status": "healthy",
+            "database": "ok",
+            "gmail_auth": gmail_status,
+            "timestamp": datetime.now().isoformat()
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "unhealthy",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }), 500
+
+@app.route('/auth/status')
+@login_required
+def auth_status():
+    """Check Gmail authentication status"""
+    try:
+        service = get_gmail_service()
+        if not service:
+            return jsonify({
+                "authenticated": False,
+                "error": "Gmail service unavailable"
+            })
+        
+        # Test with a simple API call
+        profile = service.users().getProfile(userId='me').execute()
+        
+        return jsonify({
+            "authenticated": True,
+            "email": profile.get('emailAddress'),
+            "messages_total": profile.get('messagesTotal', 0),
+            "timestamp": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "authenticated": False,
+            "error": str(e)
+        }), 500
+
+# Configuration management routes
+@app.route('/config')
+@login_required
+def config():
+    """Configuration management page"""
+    credentials_path = os.getenv('RAILWAY_VOLUME_MOUNT_PATH', app.instance_path)
+    
+    # Check for existing files
+    credentials_exists = os.path.exists(os.path.join(credentials_path, 'credentials.json'))
+    token_exists = os.path.exists(os.path.join(credentials_path, 'token.json'))
+    
+    # Get file info if they exist
+    credentials_info = {}
+    token_info = {}
+    
+    if credentials_exists:
+        try:
+            import json
+            with open(os.path.join(credentials_path, 'credentials.json'), 'r') as f:
+                creds_data = json.load(f)
+                if 'installed' in creds_data:
+                    credentials_info = {
+                        'client_id': creds_data['installed'].get('client_id', 'N/A')[:50] + '...',
+                        'project_id': creds_data['installed'].get('project_id', 'N/A')
+                    }
+        except:
+            credentials_info = {'error': 'Unable to parse credentials file'}
+    
+    if token_exists:
+        try:
+            import json
+            with open(os.path.join(credentials_path, 'token.json'), 'r') as f:
+                token_data = json.load(f)
+                token_info = {
+                    'client_id': token_data.get('client_id', 'N/A')[:50] + '...',
+                    'expiry': token_data.get('expiry', 'N/A')
+                }
+        except:
+            token_info = {'error': 'Unable to parse token file'}
+    
+    # Check Gmail service status
+    gmail_service = get_gmail_service()
+    gmail_status = "Connected" if gmail_service else "Not Connected"
+    
+    return render_template_string(CONFIG_TEMPLATE, 
+                                  credentials_exists=credentials_exists,
+                                  token_exists=token_exists,
+                                  credentials_info=credentials_info,
+                                  token_info=token_info,
+                                  gmail_status=gmail_status)
+
+@app.route('/config/upload', methods=['POST'])
+@login_required
+def upload_credentials():
+    """Upload Gmail API credentials"""
+    credentials_path = os.getenv('RAILWAY_VOLUME_MOUNT_PATH', app.instance_path)
+    
+    try:
+        file_type = request.form.get('file_type')
+        if file_type not in ['credentials', 'token']:
+            return jsonify({"success": False, "error": "Invalid file type"}), 400
+        
+        if 'file' not in request.files:
+            return jsonify({"success": False, "error": "No file uploaded"}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({"success": False, "error": "No file selected"}), 400
+        
+        # Validate JSON content
+        try:
+            content = file.read().decode('utf-8')
+            import json
+            json_data = json.loads(content)
+            
+            # Basic validation
+            if file_type == 'credentials':
+                if 'installed' not in json_data:
+                    return jsonify({"success": False, "error": "Invalid credentials format"}), 400
+            elif file_type == 'token':
+                if 'client_id' not in json_data or 'refresh_token' not in json_data:
+                    return jsonify({"success": False, "error": "Invalid token format"}), 400
+            
+        except json.JSONDecodeError:
+            return jsonify({"success": False, "error": "Invalid JSON file"}), 400
+        except UnicodeDecodeError:
+            return jsonify({"success": False, "error": "File must be valid UTF-8 text"}), 400
+        
+        # Save file
+        filename = f'{file_type}.json'
+        filepath = os.path.join(credentials_path, filename)
+        
+        with open(filepath, 'w') as f:
+            f.write(content)
+        
+        return jsonify({
+            "success": True, 
+            "message": f"{file_type.capitalize()} file uploaded successfully",
+            "filename": filename
+        })
+        
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Upload failed: {str(e)}"}), 500
+
+@app.route('/config/download/<file_type>')
+@login_required
+def download_credentials(file_type):
+    """Download Gmail API credentials (for backup)"""
+    if file_type not in ['credentials', 'token']:
+        return jsonify({"error": "Invalid file type"}), 400
+    
+    credentials_path = os.getenv('RAILWAY_VOLUME_MOUNT_PATH', app.instance_path)
+    filename = f'{file_type}.json'
+    filepath = os.path.join(credentials_path, filename)
+    
+    if not os.path.exists(filepath):
+        return jsonify({"error": f"{file_type.capitalize()} file not found"}), 404
+    
+    try:
+        return send_file(filepath, 
+                        as_attachment=True, 
+                        download_name=f'gmail_{filename}')
+    except Exception as e:
+        return jsonify({"error": f"Download failed: {str(e)}"}), 500
+
+@app.route('/config/delete/<file_type>', methods=['POST'])
+@login_required
+def delete_credentials(file_type):
+    """Delete Gmail API credentials"""
+    if file_type not in ['credentials', 'token']:
+        return jsonify({"success": False, "error": "Invalid file type"}), 400
+    
+    credentials_path = os.getenv('RAILWAY_VOLUME_MOUNT_PATH', app.instance_path)
+    filename = f'{file_type}.json'
+    filepath = os.path.join(credentials_path, filename)
+    
+    try:
+        if os.path.exists(filepath):
+            os.remove(filepath)
+            return jsonify({
+                "success": True, 
+                "message": f"{file_type.capitalize()} file deleted successfully"
+            })
+        else:
+            return jsonify({"success": False, "error": "File not found"}), 404
+            
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Delete failed: {str(e)}"}), 500
+
 @app.route('/send_to_ynab/<email_id>', methods=['POST'])
 @login_required
 def send_email_to_ynab(email_id):
@@ -459,6 +685,202 @@ def send_email_to_ynab(email_id):
     else:
         return jsonify({"success": False, "error": result["error"]}), 500
 
+
+# HTML template for config page
+CONFIG_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Configuration - YNAB Scotia Integration</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 font-sans">
+    <div class="max-w-4xl mx-auto p-6">
+        <div class="bg-white rounded-lg shadow-md p-6">
+            <div class="flex justify-between items-center mb-6">
+                <h1 class="text-3xl font-bold text-gray-800">Configuration</h1>
+                <div class="space-x-4">
+                    <a href="/emails" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded">Back to Emails</a>
+                    <a href="/logout" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded">Logout</a>
+                </div>
+            </div>
+            
+            <!-- Gmail Status -->
+            <div class="mb-8 p-4 rounded-lg {% if gmail_status == 'Connected' %}bg-green-50 border border-green-200{% else %}bg-red-50 border border-red-200{% endif %}">
+                <h2 class="text-lg font-semibold mb-2 {% if gmail_status == 'Connected' %}text-green-800{% else %}text-red-800{% endif %}">
+                    Gmail API Status: {{ gmail_status }}
+                </h2>
+                <p class="{% if gmail_status == 'Connected' %}text-green-700{% else %}text-red-700{% endif %}">
+                    {% if gmail_status == 'Connected' %}
+                        ✓ Gmail API is configured and working properly
+                    {% else %}
+                        ✗ Gmail API not authenticated. Upload credentials and token files below.
+                    {% endif %}
+                </p>
+            </div>
+            
+            <!-- Credentials File -->
+            <div class="mb-8">
+                <h2 class="text-xl font-semibold text-gray-800 mb-4">Gmail API Credentials</h2>
+                <div class="bg-gray-50 rounded-lg p-4 mb-4">
+                    {% if credentials_exists %}
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-green-600 font-medium">✓ credentials.json uploaded</p>
+                                {% if credentials_info.get('error') %}
+                                    <p class="text-red-500 text-sm">{{ credentials_info.error }}</p>
+                                {% else %}
+                                    <p class="text-sm text-gray-600">Client ID: {{ credentials_info.get('client_id', 'N/A') }}</p>
+                                    <p class="text-sm text-gray-600">Project: {{ credentials_info.get('project_id', 'N/A') }}</p>
+                                {% endif %}
+                            </div>
+                            <div class="space-x-2">
+                                <a href="/config/download/credentials" class="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded text-sm">Download</a>
+                                <button onclick="deleteFile('credentials')" class="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded text-sm">Delete</button>
+                            </div>
+                        </div>
+                    {% else %}
+                        <p class="text-red-600">✗ No credentials.json file found</p>
+                        <p class="text-sm text-gray-600 mt-1">Upload your Google OAuth2 credentials from Google Cloud Console</p>
+                    {% endif %}
+                </div>
+                
+                <div class="border-2 border-dashed border-gray-300 rounded-lg p-6">
+                    <form id="credentials-form" enctype="multipart/form-data" class="text-center">
+                        <input type="file" id="credentials-file" accept=".json" class="hidden">
+                        <input type="hidden" name="file_type" value="credentials">
+                        <button type="button" onclick="document.getElementById('credentials-file').click()" 
+                                class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg">
+                            Upload credentials.json
+                        </button>
+                        <p class="text-sm text-gray-500 mt-2">Select your OAuth2 credentials file from Google Cloud Console</p>
+                    </form>
+                </div>
+            </div>
+            
+            <!-- Token File -->
+            <div class="mb-8">
+                <h2 class="text-xl font-semibold text-gray-800 mb-4">Gmail API Token</h2>
+                <div class="bg-gray-50 rounded-lg p-4 mb-4">
+                    {% if token_exists %}
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-green-600 font-medium">✓ token.json uploaded</p>
+                                {% if token_info.get('error') %}
+                                    <p class="text-red-500 text-sm">{{ token_info.error }}</p>
+                                {% else %}
+                                    <p class="text-sm text-gray-600">Client ID: {{ token_info.get('client_id', 'N/A') }}</p>
+                                    <p class="text-sm text-gray-600">Expires: {{ token_info.get('expiry', 'N/A') }}</p>
+                                {% endif %}
+                            </div>
+                            <div class="space-x-2">
+                                <a href="/config/download/token" class="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded text-sm">Download</a>
+                                <button onclick="deleteFile('token')" class="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded text-sm">Delete</button>
+                            </div>
+                        </div>
+                    {% else %}
+                        <p class="text-red-600">✗ No token.json file found</p>
+                        <p class="text-sm text-gray-600 mt-1">Upload your Gmail API token generated from OAuth flow</p>
+                    {% endif %}
+                </div>
+                
+                <div class="border-2 border-dashed border-gray-300 rounded-lg p-6">
+                    <form id="token-form" enctype="multipart/form-data" class="text-center">
+                        <input type="file" id="token-file" accept=".json" class="hidden">
+                        <input type="hidden" name="file_type" value="token">
+                        <button type="button" onclick="document.getElementById('token-file').click()" 
+                                class="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg">
+                            Upload token.json
+                        </button>
+                        <p class="text-sm text-gray-500 mt-2">Select your Gmail API token file (generated from OAuth flow)</p>
+                    </form>
+                </div>
+            </div>
+            
+            <!-- Instructions -->
+            <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <h3 class="font-semibold text-blue-800 mb-2">Setup Instructions:</h3>
+                <ol class="text-blue-700 text-sm space-y-1 ml-4 list-decimal">
+                    <li>Get OAuth2 credentials from <a href="https://console.cloud.google.com/" target="_blank" class="underline">Google Cloud Console</a></li>
+                    <li>Download and upload credentials.json file</li>
+                    <li>Run OAuth flow locally to generate token.json</li>
+                    <li>Upload token.json file here</li>
+                    <li>Gmail API will be ready for email monitoring</li>
+                </ol>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // File upload handling
+        document.getElementById('credentials-file').addEventListener('change', function(e) {
+            uploadFile('credentials', this.files[0]);
+        });
+        
+        document.getElementById('token-file').addEventListener('change', function(e) {
+            uploadFile('token', this.files[0]);
+        });
+        
+        function uploadFile(type, file) {
+            if (!file) return;
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('file_type', type);
+            
+            fetch('/config/upload', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showMessage(data.message, 'success');
+                    setTimeout(() => location.reload(), 1500);
+                } else {
+                    showMessage(data.error, 'error');
+                }
+            })
+            .catch(error => {
+                showMessage('Upload failed: ' + error, 'error');
+            });
+        }
+        
+        function deleteFile(type) {
+            if (!confirm(`Are you sure you want to delete the ${type}.json file?`)) return;
+            
+            fetch(`/config/delete/${type}`, {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showMessage(data.message, 'success');
+                    setTimeout(() => location.reload(), 1500);
+                } else {
+                    showMessage(data.error, 'error');
+                }
+            })
+            .catch(error => {
+                showMessage('Delete failed: ' + error, 'error');
+            });
+        }
+        
+        function showMessage(message, type) {
+            const div = document.createElement('div');
+            div.className = `fixed top-4 right-4 px-6 py-3 rounded-lg text-white z-50 ${
+                type === 'success' ? 'bg-green-500' : 'bg-red-500'
+            }`;
+            div.textContent = message;
+            document.body.appendChild(div);
+            setTimeout(() => div.remove(), 3000);
+        }
+    </script>
+</body>
+</html>
+"""
 
 @app.cli.command()
 def init_db():
