@@ -665,6 +665,36 @@ def delete_credentials(file_type):
     except Exception as e:
         return jsonify({"success": False, "error": f"Delete failed: {str(e)}"}), 500
 
+
+@app.route('/config/init-db', methods=['POST'])
+@login_required
+def init_database():
+    """Initialize database tables"""
+    try:
+        db.create_all()
+        return jsonify({
+            "success": True,
+            "message": "Database tables created successfully"
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Database initialization failed: {str(e)}"}), 500
+
+
+@app.route('/config/reset-db', methods=['POST'])
+@login_required
+def reset_database():
+    """Reset database by dropping and recreating all tables"""
+    try:
+        db.drop_all()
+        db.create_all()
+        return jsonify({
+            "success": True,
+            "message": "Database reset successfully (all data cleared)"
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Database reset failed: {str(e)}"}), 500
+
+
 @app.route('/send_to_ynab/<email_id>', methods=['POST'])
 @login_required
 def send_email_to_ynab(email_id):
@@ -799,6 +829,27 @@ CONFIG_TEMPLATE = """
                 </div>
             </div>
             
+            <!-- Database Management -->
+            <div class="mb-8">
+                <h2 class="text-xl font-semibold text-gray-800 mb-4">Database Management</h2>
+                <div class="bg-gray-50 rounded-lg p-4 mb-4">
+                    <p class="text-gray-700 mb-4">Manage the SQLite database that stores email records and transaction data.</p>
+                    <div class="space-x-4">
+                        <button onclick="initDatabase()" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded">
+                            Initialize Database
+                        </button>
+                        <button onclick="resetDatabase()" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded">
+                            Reset Database (Clear All Data)
+                        </button>
+                    </div>
+                </div>
+                <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+                    <p class="text-yellow-800 text-sm">
+                        <strong>Warning:</strong> Reset Database will permanently delete all stored email records and transaction data. Use with caution.
+                    </p>
+                </div>
+            </div>
+            
             <!-- Instructions -->
             <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
                 <h3 class="font-semibold text-blue-800 mb-2">Setup Instructions:</h3>
@@ -865,6 +916,49 @@ CONFIG_TEMPLATE = """
             })
             .catch(error => {
                 showMessage('Delete failed: ' + error, 'error');
+            });
+        }
+        
+        // Database management functions
+        function initDatabase() {
+            fetch('/config/init-db', {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showMessage(data.message, 'success');
+                } else {
+                    showMessage(data.error, 'error');
+                }
+            })
+            .catch(error => {
+                showMessage('Database initialization failed: ' + error, 'error');
+            });
+        }
+        
+        function resetDatabase() {
+            if (!confirm('Are you sure you want to reset the database? This will permanently delete ALL email records and transaction data!')) {
+                return;
+            }
+            
+            if (!confirm('This action cannot be undone. Are you absolutely sure you want to proceed?')) {
+                return;
+            }
+            
+            fetch('/config/reset-db', {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showMessage(data.message, 'success');
+                } else {
+                    showMessage(data.error, 'error');
+                }
+            })
+            .catch(error => {
+                showMessage('Database reset failed: ' + error, 'error');
             });
         }
         
@@ -1044,7 +1138,7 @@ def test_payee_matching(budget_id):
                 all_payees = payees_response.data.payees
 
                 
-                print(f"\nFound {len(all_payees)} total payees, {len(active_payees)} active payees")
+                print(f"\nFound {len(all_payees)} total payees")
                 print("\nActive YNAB Payees Available for Matching:")
                 print("-" * 50)
                 for i, payee in enumerate(all_payees[:20], 1):  # Show first 20
