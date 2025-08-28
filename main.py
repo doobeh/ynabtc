@@ -1,6 +1,7 @@
 from flask import Flask, jsonify, render_template, request, redirect, url_for, flash, session, render_template_string, send_file
 import click
 import os
+import logging
 from googleapiclient.discovery import build
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -106,6 +107,19 @@ class Email(db.Model):
     
     def __repr__(self):
         return f'<Email {self.id}: {self.subject}>'
+
+
+# Sync Log model
+class SyncLog(db.Model):
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    timestamp = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    status = db.Column(db.String(20))  # 'success', 'error', 'warning'
+    total_emails = db.Column(db.Integer)
+    new_emails = db.Column(db.Integer)
+    message = db.Column(db.Text)
+    
+    def __repr__(self):
+        return f'<SyncLog {self.id}: {self.status} at {self.timestamp}>'
 
 def get_gmail_service():
     """Initialize and return Gmail API service with improved error handling"""
@@ -716,6 +730,14 @@ def send_email_to_ynab(email_id):
         return jsonify({"success": False, "error": result["error"]}), 500
 
 
+@app.route('/logs')
+@login_required
+def sync_logs():
+    """View sync operation logs"""
+    logs = SyncLog.query.order_by(SyncLog.timestamp.desc()).limit(50).all()
+    return render_template('logs.html', logs=logs)
+
+
 
 @app.cli.command()
 def init_db():
@@ -943,22 +965,44 @@ def test_payee_matching(budget_id):
         print(f"Error testing payee matching: {str(e)}")
 
 
+def log_sync_result(status, total_emails=None, new_emails=None, message=""):
+    """Log sync operation results to database"""
+    try:
+        sync_log = SyncLog(
+            status=status,
+            total_emails=total_emails,
+            new_emails=new_emails,
+            message=message
+        )
+        db.session.add(sync_log)
+        db.session.commit()
+    except Exception as e:
+        print(f"Warning: Failed to log sync result: {str(e)}")
+
+
 @app.cli.command()
 def sync_emails():
     """Sync Scotia Bank emails (for cron jobs)"""
-    print(f"[{datetime.now().isoformat()}] Starting email sync...")
+    sync_start_time = datetime.now().isoformat()
+    print(f"[{sync_start_time}] Starting email sync...")
     
     try:
         result = get_scotiabank_emails()
         
         if "error" in result:
-            print(f"ERROR: {result['error']}")
+            error_msg = result['error']
+            print(f"ERROR: {error_msg}")
+            log_sync_result("error", message=error_msg)
             exit(1)
         
         total_emails = len(result.get('emails', []))
         new_emails = result.get('new_count', 0)
         
-        print(f"SUCCESS: Found {total_emails} total emails, {new_emails} new")
+        success_msg = f"Found {total_emails} total emails, {new_emails} new"
+        print(f"SUCCESS: {success_msg}")
+        
+        # Log the successful sync
+        log_sync_result("success", total_emails=total_emails, new_emails=new_emails, message=success_msg)
         
         if new_emails > 0:
             print(f"New emails processed: {new_emails}")
@@ -966,7 +1010,9 @@ def sync_emails():
             print("No new emails found")
             
     except Exception as e:
-        print(f"FATAL ERROR: {str(e)}")
+        error_msg = f"FATAL ERROR: {str(e)}"
+        print(error_msg)
+        log_sync_result("error", message=str(e))
         exit(1)
 
 

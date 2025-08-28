@@ -1,0 +1,17 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
+
+# Main web service
+[[services]]
+name = "web"
+
+# Email sync cron job - runs every 5 minutes
+[[services]]
+name = "email-sync"
+cronSchedule = "*/5 * * * *"
+command = "uv run flask --app main sync-emails"

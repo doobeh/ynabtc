@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sync Logs - YNAB Scotia Integration</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 font-sans">
+    <div class="max-w-6xl mx-auto p-6">
+        <div class="text-center text-gray-800 border-b-2 border-red-500 pb-2.5 mb-8">
+            <div class="flex justify-between items-center">
+                <div class="flex space-x-4">
+                    <a href="/emails" class="text-blue-600 hover:text-blue-800 text-sm font-medium">📧 Emails</a>
+                    <a href="/config" class="text-blue-600 hover:text-blue-800 text-sm font-medium">⚙️ Configuration</a>
+                </div>
+                <h1 class="text-2xl font-bold">Sync Operation Logs</h1>
+                <div class="text-right">
+                    <div class="text-sm text-gray-600">Logged in as: {{ current_user.email }}</div>
+                    <a href="/logout" class="text-red-600 hover:text-red-800 text-sm">Logout</a>
+                </div>
+            </div>
+        </div>
+
+        {% if logs %}
+            <div class="bg-white rounded-lg shadow-md overflow-hidden">
+                <div class="bg-gray-50 px-6 py-3 border-b">
+                    <h2 class="text-lg font-semibold text-gray-800">Recent Sync Operations (Last 50)</h2>
+                    <p class="text-sm text-gray-600">Monitor your automated email sync job performance</p>
+                </div>
+                
+                <div class="overflow-x-auto">
+                    <table class="w-full table-auto">
+                        <thead class="bg-gray-100">
+                            <tr class="text-left">
+                                <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Timestamp</th>
+                                <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                                <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Emails</th>
+                                <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">New</th>
+                                <th class="px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Message</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-200">
+                            {% for log in logs %}
+                            <tr class="hover:bg-gray-50">
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                    {{ log.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    {% if log.status == 'success' %}
+                                        <span class="inline-flex px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">
+                                            ✓ Success
+                                        </span>
+                                    {% elif log.status == 'error' %}
+                                        <span class="inline-flex px-2 py-1 text-xs font-semibold rounded-full bg-red-100 text-red-800">
+                                            ✗ Error
+                                        </span>
+                                    {% else %}
+                                        <span class="inline-flex px-2 py-1 text-xs font-semibold rounded-full bg-yellow-100 text-yellow-800">
+                                            ⚠ {{ log.status.title() }}
+                                        </span>
+                                    {% endif %}
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                    {% if log.total_emails is not none %}
+                                        {{ log.total_emails }}
+                                    {% else %}
+                                        —
+                                    {% endif %}
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                    {% if log.new_emails is not none %}
+                                        {% if log.new_emails > 0 %}
+                                            <span class="font-medium text-blue-600">{{ log.new_emails }}</span>
+                                        {% else %}
+                                            {{ log.new_emails }}
+                                        {% endif %}
+                                    {% else %}
+                                        —
+                                    {% endif %}
+                                </td>
+                                <td class="px-6 py-4 text-sm text-gray-700 max-w-md">
+                                    <div class="truncate" title="{{ log.message }}">
+                                        {{ log.message }}
+                                    </div>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <div class="mt-6 bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <h3 class="font-semibold text-blue-800 mb-2">About Sync Logs</h3>
+                <ul class="text-blue-700 text-sm space-y-1">
+                    <li>• <strong>Success:</strong> Email sync completed without errors</li>
+                    <li>• <strong>Error:</strong> Gmail API authentication failed or other critical errors</li>
+                    <li>• <strong>Total Emails:</strong> All Scotia Bank emails found in Gmail</li>
+                    <li>• <strong>New Emails:</strong> Emails added to the database during this sync</li>
+                    <li>• Sync runs automatically every 5 minutes via Railway cron job</li>
+                </ul>
+            </div>
+        {% else %}
+            <div class="bg-white rounded-lg shadow-md p-8 text-center">
+                <div class="text-gray-400 mb-4">
+                    <svg class="w-16 h-16 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                    </svg>
+                </div>
+                <h3 class="text-lg font-medium text-gray-900 mb-2">No Sync Logs Found</h3>
+                <p class="text-gray-600 mb-4">Sync logs will appear here once the automated email sync job starts running.</p>
+                <p class="text-sm text-gray-500">The sync job runs every 5 minutes and logs all operations to this database.</p>
+            </div>
+        {% endif %}
+    </div>
+</body>
+</html>
