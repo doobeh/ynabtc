@@ -980,7 +980,7 @@ def log_sync_result(status, total_emails=None, new_emails=None, message=""):
         print(f"Warning: Failed to log sync result: {str(e)}")
 
 
-@app.cli.command()
+@app.route('/sync')
 def sync_emails():
     """Sync Scotia Bank emails (for cron jobs)"""
     sync_start_time = datetime.now().isoformat()
@@ -993,7 +993,7 @@ def sync_emails():
             error_msg = result['error']
             print(f"ERROR: {error_msg}")
             log_sync_result("error", message=error_msg)
-            exit(1)
+            return {"error": error_msg}
         
         total_emails = len(result.get('emails', []))
         new_emails = result.get('new_count', 0)
@@ -1008,12 +1008,14 @@ def sync_emails():
             print(f"New emails processed: {new_emails}")
         else:
             print("No new emails found")
+
+        return {"success": success_msg}
             
     except Exception as e:
         error_msg = f"FATAL ERROR: {str(e)}"
         print(error_msg)
         log_sync_result("error", message=str(e))
-        exit(1)
+        return {"error": error_msg}
 
 
 if __name__ == '__main__':
