@@ -10,4 +10,4 @@ restartPolicyType = "ON_FAILURE"
 [[services]]
 name = "email-sync"
 cronSchedule = "*/5 * * * *"
-command = "uv run flask --app main sync-emails"
+command = "python -m flask --app main sync-emails"
